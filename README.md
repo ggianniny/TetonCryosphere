@@ -12,5 +12,5 @@ Code and data repository for Khatiwada et al., 2025.
   + *cleaned_full_datasets* - .csv file with cleaned stream temperature data for all sites/years
   
 * Figures are stored in the "plots" folder. This includes:
-  + Figure S(?): stream temperaure data cleaning
-  + Figure S(?): summer stream temperature comparison by source type
+  + *Figure S(?)*: stream temperaure data cleaning
+  + *Figure S(?)*: summer stream temperature comparison by source type

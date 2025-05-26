@@ -1,0 +1,612 @@
+---
+title: "Khatiwada et al. 2025 - Stream Temp Data Cleaning"
+author: "Gordon Gianniny"
+date: "2025-05-12"
+output: html_document
+---
+
+```{r, echo=F}
+#Load Packages:
+library(tidyverse) #For data wrangling
+library(lubridate) #For working with dates
+library(ggplot2) #Plotting
+library(RColorBrewer)
+library(patchwork)
+library(cpop)
+library(here)
+```
+
+### **Outline:**
+
+1. Overview
+
+2. Data Cleaning
+    + Data Import & Organization
+    + Removing Pre-deployment and Post-clean up measurements
+      + Initial data visualization/checking
+    + Dealing with outliers & errors
+      + Low outliers: set all values <0 C = 0 C
+      + Drop extra measurements from S AK Basin in 2016 and 2017
+      + Removing exposures/logger errors
+    + Filling in missing dates & add source info
+    + Final visulaziation & Data export
+  
+3. Figure Making
+   + Figure (?): Data cleaning visualization
+   + Figure (?): Comparison of snow field/glacier/rock glacier temperature regimes
+
+
+## 1. Overview
+
+This script performs stream temperature data cleaning and creates figures *XX* for **TITLE**. 
+
+* **Inputs** are raw stream temperature data from Grand Teton National Park, collected between 2015 and 2024. 
+  + Note - before reading into this script, columns were standardized across all data files and each file was re-named for the corresponding site and year using the format "siteYYYY" (e.g. "cloudveil2019")
+  
+* **Outputs** are cleaned stream temperature data sets and figures **XX**. 
+  + Cleaned data sets are stored in stream_temp_data/cleaned_full_datasets
+  + Figures are stored in the "plots" folder. 
+
+## 2. Data Cleaning
+
+### a. Data Import & Organization
+
+1. Make a list of all filepaths:
+
+```{r}
+file.list <- list.files(here("stream_temp_data", "raw_data"), full.names = TRUE) 
+fp.length <- nchar(here("stream_temp_data", "raw_data"))+2 #store n characters in filepath for later trimming (including 2 extra for opening quote and / after raw_data)
+```
+
+2. Set up a blank list for data frame storage:
+
+```{r}
+data_list <- list() #blank list
+```
+
+3. Loop over all files to read each dataframe into data_list, make some formatting adjustments: 
+
+
+```{r, warning=F}
+for(i in 1:length(file.list)){
+  data_list[[i]]<-read.csv(file.list[i], skip = 1, col.names = c("obs", "date_time", "temp", "x1", "x2", "x3", "x4", "x5")) %>% #read in data files and store as obj in list; rename columns
+ select(2, 3)%>% #select second and third cols
+ rename("date_tm_char" = 1, "temp_c" = 2)%>% #rename first column "date_tm_char", second column "temp_c" 
+ mutate(
+ time_chr = substr(date_tm_char, 10, nchar(date_tm_char)), #Extract time (to avoid extra "/" in some files)
+ date_chr = substr(date_tm_char, 1, 8), #Extract date (to avoid extra "/" in some files)
+  date_tm = round_date(mdy_hms(paste(date_chr, time_chr, sep = " ")), unit = "hours"), #re-combine date and time; convert to R time format rounded to nearest hour     
+ site = substr(file.list[i], fp.length, (nchar(file.list[i])-8)),  #make new column w/site ID  with substring function to select the site name portion of the filepath
+ temp_c = as.numeric(temp_c), #recode temp_c as a number
+ year = as.numeric(substr(file.list[i], (nchar(file.list[i])-7), (nchar(file.list[i])-4))) #add year column with substring fxn to pull year out of each file name
+ )%>%
+select(-date_tm_char, -time_chr, -date_chr) #remove unnecessary intermediate cols from date creation
+}
+```
+
+
+Check first and last 6 rows of the first item in the list - should have columns "temp_c", "date_tm" (rounded to nearest hour), ""site", and "year". 
+
+```{r}
+head(data_list[[1]])
+tail(data_list[[1]])
+```
+
+### b. Removing Pre-deployment and Post-clean up measurements
+
+**General Approach:**
+
+  1. Rowbind all dataframes in data_list to get one "master" dataframe with columns "temp_c", "date_tm", "site", and "year".  
+  2. Read in a .csv files with the deployment and retrevial dates for each site for each year with columns "year", "site", "deployment_plus1", and "retrevial_minus1". 
+  3. Merge these two dataframes by "site" and "year" to get a new dataframe with columns "site", "year", "temp_c", "date_tm", "deployment_plus1", and "retreviall_minus1"
+  4. Filter each site to remove any observations with date_tm < deployment_plus1 or > retrevial_minus1 (may need to split back into separate dataframes). 
+
+**1. Rowbind all dataframes in data_list; drop data from sites outside GTNP/not used in this analysis:**
+
+```{r}
+#make list of desired site names:
+gtnp.sites <- c("delta", "mid_teton", "skillet", "cloudveil", "gusher", "s_ak_basin", "s_cascade", "grizzly", "n_teton", "s_teton")
+
+#rbind dataframes into one dataframe, extract GTNP sites:
+full_rbind <- data_list %>%
+  bind_rows()%>%
+  filter(site%in%gtnp.sites)
+
+head(full_rbind)
+tail(full_rbind)
+```
+
+
+**2. Read in a .csv files with the deployment and retrevial dates for each site for each year with columns "year", "site", "deployment_plus1", and "retrevial_minus1".** 
+ (Export from the "Deployment dates" google sheet: https://docs.google.com/spreadsheets/d/1yvyq_zOSwhUTm2_yDDuofD2SFVrExWLZfKlJ-aubgs8/edit?usp=sharing)
+ 
+ NOTE - for adding the 2022-23 data, I removed rows without a corresponding data file (skillet and Grizzly) and got rid of the deployment dates for the 2023-24 data for easier data cleaining. 
+ 
+```{r}
+dep_dates <- read.csv(here("stream_temp_data","deployment_dates.csv"))%>% #read datafile - this is the "Deployment dates" tab of the Deployment dates google sheet updated for the current year and saved as a .csv file
+  mutate(deployment_plus1 = mdy(deployment_plus1), #re-code deployment_plus1 as a date
+         retrieval_minus1 = mdy(retrieval_minus1), #re-code retrieval_minus1 as a date
+         year = as.numeric(year) #recode year as numeric
+           )
+```
+
+**3. Merge these two dataframes by "site" and "year" to get a new dataframe with columns "site", "year", "temp_c", "date_tm", "deployment_plus1", and "retrevial_minus1"**
+
+```{r}
+full_dep <- merge(full_rbind, dep_dates, all.x = T) #merge, keep all rows in full_rbind
+
+head(full_dep)
+tail(full_dep)#checking outputs
+```
+
+**4. Filter each site to remove any observations with date_tm < deployment_plus1 or > retrevial_minus1 (may need to split back into separate dataframes).** 
+
+a. Make new column with site and year to split dataframe by: 
+
+```{r}
+full_dep <- full_dep %>%
+  mutate(site_yr = paste(site, year, sep = "_"))%>% #new column with SiteName_year
+  arrange(site_yr, date_tm)
+
+head(full_dep) #Check output
+```
+
+b. Split by site_yr column to get a list of dataframes, one for each year for each site: 
+
+```{r}
+full_dep_split <- split(full_dep, full_dep$site_yr)
+
+head(full_dep_split[[1]]) 
+head(full_dep_split[[10]]) #Checking a few entries to ensure split was carried out correctly
+```
+
+c. Write a function to filter out any columns with date_tm <deployment_plus1 or date_tm > retrieval_minus1:
+
+```{r}
+deployment.fxn <- function(df){
+  df <- df %>% #overwrite with new dataframe
+    filter(!(date_tm < deployment_plus1), #remove any rows where date_tm is < deployment_plus1
+           !(date_tm > retrieval_minus1)) # or > retrieval_minus1
+}
+```
+
+d. Apply this function to the split list to remove pre/post deployment measures for each site and year: 
+
+```{r}
+cleaned_split <- lapply(full_dep_split, deployment.fxn)
+
+head(full_dep_split[[1]])
+head(cleaned_split[[1]])#check beginning
+
+
+tail(full_dep_split[[1]])
+tail(cleaned_split[[1]])# and end of first dataframe to confirm that correct dates were removed
+```
+
+e. Re-combine split dataframes to get back to cleaned master dataframe: 
+
+```{r}
+clean_rbind <- cleaned_split %>%
+  bind_rows()%>% #re-combine into single DF
+  select(site, year, date_tm, temp_c) #select desired cols
+
+#Check output: 
+
+head(clean_rbind)
+tail(clean_rbind)
+```
+
+#### i. Initial data visualization/checking
+
+Line graphs and scatterplots for the entire period of record for each site: 
+
+```{r}
+site.lines <- ggplot(clean_rbind, aes(x = date_tm, y = temp_c, color = site))+
+  geom_line()+
+  facet_wrap(~site, scales = "free")+
+  theme_classic()+
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Stream temperature, C")
+site.lines
+site.scatter <- ggplot(clean_rbind, aes(x = date_tm, y = temp_c, color = site))+
+  geom_point(pch = 20, size = 0.1)+
+  facet_wrap(~site, scales = "free")+
+  theme_classic()+
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Stream temperature, C")
+site.scatter
+```
+
+### c. Dealing with outliers & errors
+
+#### i. Low outliers: set all values <0 C = 0 C
+
+```{r}
+clean_zero <- clean_rbind %>%
+   mutate(date1 = ymd(substr(date_tm, 1,10)), 
+          year = year(date1))%>%# add column with just date (no time) for later use, correct year column. 
+  mutate(temp_raw = temp_c, 
+         temp_c = if_else(temp_c < 0, 0, temp_c)) #adding column with raw/uncorrected temps to include temps <0
+```
+
+Check resulting plot to confirm results: 
+
+```{r}
+zero.scatter <- ggplot(clean_zero, aes(x = date_tm, y = temp_c, color = site))+
+  geom_point(pch = 20, size = 0.1)+
+  facet_wrap(~site, scales = "free")+
+  theme_classic()+
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Stream temperature, C")
+zero.scatter
+```
+
+#### ii. Drop extra measurements from S AK Basin in 2016 and 2017
+
+Some data from South AK Baisn was collected at 15min logging interval instead of 1hr logging interval - need to get rid of these extra measurements to avoid skewing models.
+
+First, plot n obs to identify error:
+
+```{r}
+clean_zero%>%
+  filter(site=="s_ak_basin")%>%
+  mutate(year=year(date1))%>%
+  group_by(year)%>%
+  summarise(n_obs = length(temp_c))%>%
+  ggplot(aes(x = year, y = n_obs))+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_x_continuous(breaks=c(2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024))
+```
+
+Years with 15min logging interval are 2016 and 2017. 
+
+Goal = average each set of 4 logging intervals with same date_tm
+
+```{r}
+clean_zero_corrected <- clean_zero%>%
+  group_by(date_tm, date1, site, year)%>% #group by date_tm to combine non-unique values, retain other cols
+  summarise(temp_c = mean(temp_c), 
+         temp_raw = mean(temp_raw)) #calculate mean of 15min readings to get hourly reading
+
+head(filter(clean_zero_corrected, site=="s_ak_basin"))
+```
+
+Check if successful:
+
+```{r}
+clean_zero_corrected%>%
+  filter(site=="s_ak_basin")%>%
+  mutate(year=year(date1))%>%
+  group_by(year)%>%
+  summarise(n_obs = length(temp_c))%>%
+  ggplot(aes(x = year, y = n_obs))+
+  geom_bar(stat="identity", position = "dodge")+
+  scale_x_continuous(breaks=c(2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024))
+```
+
+Seems to have worked - reality check length of time for 2016 and 17:
+
+```{r}
+ggplot(filter(clean_zero_corrected, site == "s_ak_basin"), aes(x = date1, y = temp_c))+
+  geom_point()+
+  theme_classic()
+```
+
+
+#### iii. Removing exposures/logger errors
+
+**General Process/Workflow:**
+
+* Calculate daily temperatures + temperature ranges for each site
+* Calculate SD of temperature range for each site *excluding* years with suspected data errors
+  + NOTE - currently just using subjective visual assessment to ID data errors. 
+* Extract date ranges with temp ranges >5x SD for each site
+* Drop these date ranges from the overall dataset. 
+
+**1. Calculate daily temp ranges for each site & calcualte mean + SD for each site:** 
+
+```{r}
+full_temp_ranges <- clean_zero_corrected %>% 
+  group_by(site, date1)%>% #group by site and day
+  mutate(t_xbar = mean(temp_raw), #calculate mean temperature
+            t_min = min(temp_raw), 
+            t_max = max(temp_raw))%>% # add year column
+  filter(!is.na(site))%>%
+  mutate(t_range = t_max-t_min)%>% #calculate temperature range
+  group_by(site)%>% #group by site
+  mutate(tr_mean = mean(t_range, na.rm = T), #calculate mean temp range by site
+         tr_sd = sd(t_range, na.rm = T)) #calculate temp range SD by site
+
+#Check output:
+head(full_temp_ranges)
+```
+
+Basic plot of temp ranges to identify years with suspected errors: 
+
+```{r}
+ggplot(full_temp_ranges, aes(x = date1, y = t_range, color = site, fill = site))+
+  geom_line()+
+  facet_wrap(~site, scales = "free")+
+  theme_classic()+
+  geom_ribbon(aes(ymin = (tr_mean-(5*tr_sd)), 
+                  ymax = (tr_mean+(5*tr_sd)),
+                  alpha =0.5))+ #Add ribbons for 5* Temp Range SD
+  geom_hline(aes(yintercept = tr_mean), linetype = "dashed")+ #add dashed line for mean temp range by site
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Daily temp. range, C")
+```
+
+Appear to be errors in Cloudveil (1 year) and S AK Basin (2 years) - flag years with errors: 
+
+```{r}
+temp_ranges_flagged <- full_temp_ranges%>%
+  mutate(error = ifelse(t_range>(tr_mean+(5*tr_sd)), "Y", "N")) #Add column with temp range flag ("Y" if >5* SD)
+
+#Extract years/sites with errors: 
+
+tr_errors <- temp_ranges_flagged %>%
+  filter(error == "Y")%>%
+  select(site, year)%>%
+  unique()%>%
+  mutate(site_yr = paste(site, year, sep = "_"))
+tr_errors
+```
+
+
+**2. Re-calculate SD excluding error years**
+
+**NOTE** - for now, treating any year that had measurements >5* original SD as an "error year"
+
+Drop years with errors from dataset and re-calculate SD: 
+
+```{r}
+sd_recalc <- temp_ranges_flagged %>%
+  mutate(site_yr = paste(site, year, sep = "_"))%>% #add site year column
+  filter(!site_yr%in%tr_errors$site_yr)%>% #drop all site/year combos in "tr_errors" df to get rid of years with obs > 5* original sd calculations
+  group_by(site)%>% 
+  mutate(sd_updated = sd(t_range, na.rm = T), 
+         tr_xbar_updated = mean(t_range, na.rm = T))%>% #recalculate temperature range SD and mean for each site excluding error years.
+  select(site, sd_updated, tr_xbar_updated)%>% #drop extra columns for merge
+  unique()#drop extra rows for merge
+```
+
+Merge with full dataset:
+
+```{r}
+tr_updated_sd <- merge(full_temp_ranges, sd_recalc) #add re-calculated sd's to original dataset
+```
+
+Re-make ribbon plot with updated temp ranges: 
+
+```{r}
+ggplot(tr_updated_sd, aes(x = date1, y = t_range, color = site, fill = site))+
+  geom_line()+
+  facet_wrap(~site, scales = "free")+
+  theme_classic()+
+  geom_ribbon(aes(ymin = (tr_xbar_updated-(7*sd_updated)), 
+                  ymax = (tr_xbar_updated+(7*sd_updated)),
+                  alpha =0.5))+ #Add ribbons for 5* Temp Range SD
+  geom_hline(aes(yintercept = tr_mean), linetype = "dashed")+ #add dashed line for mean temp range by site
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Daily temp. range, C")
+```
+
+**3. Drop data with >7 SD's over the mean**
+
+Flag temp values >7*SD, drop from dataset: 
+
+```{r}
+tr_flagged_final <- tr_updated_sd %>%
+  mutate(error = ifelse(t_range>=(tr_xbar_updated+(7*sd_updated)), "Y", "N"), 
+         month = month(date1))
+
+#check error sites/years: 
+
+tr_error_updated <- tr_flagged_final %>%
+  filter(error == "Y")%>%
+  group_by(site, year, month)%>%
+  summarise(n_errors = length(error))
+tr_error_updated
+```
+
+Drop errors from dataset:
+
+```{r}
+tr_cleaned_final <- tr_flagged_final %>%
+  filter(!error == "Y")%>% # drop error measurements
+  select(site, date_tm, date1, year, temp_c, temp_raw, month) #drop extra columns produced in data cleaning
+```
+
+
+Check plots: 
+
+```{r}
+#cleaned
+tr.raw2 <- ggplot(
+  filter(tr_flagged_final, site%in%tr_error_updated$site), 
+  aes(x = date1, y = temp_c, color = site)
+)+
+  geom_line()+
+  facet_wrap(~site, scales = "free_x")+
+  theme_classic()+
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Daily temp. range, C", title = "Raw Data")+
+  scale_y_continuous(limits=c(0,45))
+
+#raw
+tr.clean2 <- ggplot(
+  filter(tr_cleaned_final, site%in%tr_error_updated$site), 
+  aes(x = date1, y = temp_c, color = site)
+)+
+  geom_line()+
+  facet_wrap(~site, scales = "free_x")+
+  theme_classic()+
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Daily temp. range, C", title = "Cleaned (all obs with temp range >7SD from mean dropped)")+
+  scale_y_continuous(limits=c(0,45))
+
+tr.comparison<- tr.raw2/tr.clean2
+tr.comparison
+```
+
+**NOTES - 5/12:** Tested a few different SD cutoffs. 7 SD's seems to work best:
+
+* 5 SD's was picking up Mid Teton + multiple other years from sites with actual errors. 
+* 10 SD's leaves some error measurements in. 
+* 7 SD's seemed like a good mid-point between these two that only picks up sites with suspected errors and doesn't leave too much erroneus data. 
+* NOTE that this approach ONLY works for sites with multiple years of data and results in dropping 2 sites with only 1 year of data (Schoolroom, Death Canyon). 
+
+### d. Filling in missing dates & add source info
+
+Read in source info:
+
+```{r}
+source_info <- read.csv(here("stream_temp_data", "source_info.csv"))%>%
+  rename(site = stream)%>%
+  filter(site%in%gtnp.sites)
+```
+
+Fill in missing dates for cleaner plotting:
+
+```{r}
+temps_final <- tr_cleaned_final%>%
+  group_by(site)%>% #group by site
+  complete(date1=seq.Date(from = min(date1), to = max(date1), by = "day"))%>% #fill dates by day from min to max within each site.
+  ungroup()%>%
+  merge(source_info)
+```
+
+Check plots to confirm if successful:
+
+```{r}
+ggplot(filter(tr_cleaned_final, site == "s_ak_basin"), aes(x = date1, y = temp_c))+
+  geom_line()
+
+ggplot(filter(temps_final, site == "s_ak_basin"), aes(x = date1, y = temp_c))+
+  geom_line()
+```
+### e. Final visualization & Data export
+
+```{r}
+source.pal <- c("#C26ED6", "#76D96F", "#F89225" )
+
+cleaned.lines <- ggplot(temps_final, aes(x = date1, y = temp_c, color = source))+
+  geom_line()+
+  facet_wrap(~site, scales = "free")+
+  theme_classic()+
+  theme(legend.position = "bottom")+
+  labs(x = "Date", y = "Stream temperature, C", color = "Source Type")+
+  scale_color_manual(values = source.pal
+                     , labels = c("Glacier", "Snow Field", "Rock Glacier")
+                     )
+cleaned.lines
+
+```
+
+Export cleaned data file: 
+
+```{r}
+write.csv(temps_final, here("stream_temp_data", "cleaned_full_datasets", "temps_hourly.csv"))
+```
+
+
+## 3. Figure Making
+
+### a. Figure (?): Data cleaning visualization
+
+Panel B: Temperature ranges with error values in red, band + dotted line for SD. 
+
+```{r}
+tr.panelB <- tr_flagged_final%>%
+  filter(site == "s_ak_basin"|site== "cloudveil")%>%
+  mutate(sitePrint = ifelse(site == "s_ak_basin", "South Alaska basin", "Cloudveil Dome"))%>%
+  ggplot(
+  aes(x = date1, y = t_range, color = error))+
+  geom_point()+
+  facet_wrap(~sitePrint, scales = "free")+
+  theme_classic()+
+  geom_ribbon(aes(ymin = (tr_xbar_updated-(7*sd_updated)), 
+                  ymax = (tr_xbar_updated+(7*sd_updated)), color = NULL,
+                  alpha =0.5))+ #Add ribbons for 5* Temp Range SD
+  geom_hline(aes(yintercept = tr_mean), linetype = "dashed")+ #add dashed line for mean temp range by site
+  scale_color_manual(values = c("black", "red"))+
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Deil temp. range, C", title = "B. Deil temperature ranges with errors flagged")
+tr.panelB
+```
+
+Panel A & C: raw and cleaned data: 
+
+```{r}
+#raw
+tr.panelA <- tr_flagged_final%>%
+  filter(site == "s_ak_basin"|site== "cloudveil")%>%
+  mutate(sitePrint = ifelse(site == "s_ak_basin", "South Alaska basin", "Cloudveil Dome"))%>%
+  ggplot(
+  aes(x = date1, y = temp_c)
+)+
+  geom_point()+
+  facet_wrap(~sitePrint, scales = "free_x")+
+  theme_classic()+
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Stream temperature, C", title = "A. Raw stream temperature data")+
+  scale_y_continuous(limits=c(0,45))
+
+#clean
+tr.panelC <- tr_cleaned_final%>%
+  filter(site == "s_ak_basin"|site== "cloudveil")%>%
+  mutate(sitePrint = ifelse(site == "s_ak_basin", "South Alaska basin", "Cloudveil Dome"))%>%
+  ggplot(
+  aes(x = date1, y = temp_c)
+)+
+  geom_point()+
+  facet_wrap(~sitePrint, scales = "free_x")+
+  theme_classic()+
+  theme(legend.position = "none")+
+  labs(x = "Date", y = "Stream temperature, C", title = "C. Cleaned data (all obs with temp range >7SD from mean dropped)")+
+  scale_y_continuous(limits=c(0,45))
+```
+
+Stack all three and save: 
+
+```{r}
+tr.fig.stacked <- tr.panelA/tr.panelB/tr.panelC
+tr.fig.stacked
+
+
+ggsave(here("plots", "tr_cleaning_fig.jpg"), tr.fig.stacked, device = "jpg", width = 6.5, height = 6.5, units = "in", dpi = "retina")
+```
+
+
+### b. Figure (?): Comparison of snow field/glacier/rock glacier temperature regimes
+
+Boxplot by source type for all years of data: 
+
+```{r}
+summer.comparison.box <- temps_final%>%
+  mutate(source_print = case_when(
+    source == "snowmelt" ~ "Snow Field", 
+    source == "glacier" ~ "Glacier", 
+    source == "rock_glacier" ~ "Rock Glacier"
+  ))%>%
+  filter(month==8)%>%
+  ggplot(aes(x = source_print, y = temp_raw, fill = source))+
+  geom_boxplot()+
+  theme_classic()+
+  labs(x = "Source Type", y = "August Stream temperature, C", fill = "Source Type")+
+  theme(
+    axis.title = element_text(size = 11, face = "bold"),
+    legend.title = element_text(size = 11, face = "bold"), 
+    legend.position = "none", 
+    strip.text = element_text(size = 11, face = "bold")
+  )+
+  scale_fill_manual(values = source.pal, labels = c("Glacier", "Snow Field", "Rock Glacier"))
+summer.comparison.box
+```
+
+Save:
+
+```{r}
+ggsave(here("plots", "summer_comparison_box.pdf"), summer.comparison.box, device = "pdf", units = "in", dpi = "retina", width = 6.5, height = 3.5)
+```
+

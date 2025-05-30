@@ -1,0 +1,125 @@
+---
+title: "Prior V posterior"
+author: "Justin Pomeranz"
+date: "2025-05-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidybayes)
+library(brms)
+library(ggthemes)
+
+brm1 <- readRDS(
+  here::here(
+    "temperature_brms/fit_model_aug_hurdle.rds"))
+
+prior_df <- prior_draws(brm1)
+colnames(prior_df) <- paste("prior_",
+                            colnames(prior_df),
+                            sep = "")
+
+prior_post_plot <- function(prior_name, posterior_name, title){
+  spread_draws(brm1, {{posterior_name}}) |>
+    select({{posterior_name}}) |>
+    bind_cols(prior_df |> select({{prior_name}})) |>
+    rename("posterior" = {{posterior_name}},
+           "prior" = {{prior_name}}) |>
+    pivot_longer(posterior:prior) |>
+    ggplot(aes(x = value, 
+               fill = name,
+               color = name)) +
+    stat_halfeye(alpha = 0.5) +
+    theme_bw() +
+    ggthemes::scale_fill_colorblind() +
+    ggthemes::scale_color_colorblind() +
+    labs(title = title)
+}
+
+# rmarkdown::render("temperature_brms/Prior_v_posterior.Rmd", output_format = "html_document")
+```
+
+## Supplemental Information: Prior vs. Posterior  
+
+The following document shows the prior and posterior distributions for all model parameters  
+
+### Fixed effect parameters  
+
+#### Intercept  
+
+```{r}
+prior_post_plot(prior_Intercept, Intercept, "Intercept")
+```
+
+#### $$\beta_{year}$$  
+
+
+```{r}
+prior_post_plot(prior_b, b_year_s, "Year coefficient")
+```
+
+#### $$\beta_{rock glacier}$$  
+
+
+```{r}
+prior_post_plot(prior_b, b_sourcerock_glacier, "Rock Glacier Intercept coefficient")
+```
+
+#### $$\beta_{snowfield}$$  
+
+
+```{r}
+prior_post_plot(prior_b, b_sourcesnowmelt, "Snowmelt Intercept coefficient")
+```
+
+#### $$\beta_{year_rock glacier}$$  
+
+
+```{r}
+prior_post_plot(prior_b, `b_year_s:sourcerock_glacier`, "Year:Rock Glacier coefficient")
+```
+
+
+#### $$\beta_{year_snowfield}$$  
+
+
+```{r}
+prior_post_plot(prior_b, `b_year_s:sourcesnowmelt`, "Year:Snowmelt coefficient")
+```
+
+## Standard Deviations  
+
+#### $$\sigma_{Site Intercept}$$  
+
+
+```{r}
+prior_post_plot(prior_sd_site, sd_site__Intercept, "SD Site Intercept")
+```
+
+
+#### $$\sigma_{Site Year}$$  
+
+
+```{r}
+prior_post_plot(prior_sd_site, sd_site__year_s, "SD Site Year")
+```
+
+
+#### $$\rho_{Site Year}$$  
+
+
+```{r}
+prior_post_plot(prior_cor_site, cor_site__Intercept__year_s, "Correlation of Site intercept and Year slope")
+```
+
+
+
+
+
+
+
+
+
+
